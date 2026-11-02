@@ -226,7 +226,7 @@ docker run --rm -it \
 
 ```bash
 # Optional: Set version (defaults to 0.1.3)
-export VERSION=0.2.6
+export VERSION=0.2.7
 
 # Start container in background
 docker-compose up -d
@@ -404,6 +404,19 @@ VAST_ADMIN_MCP_AUTH_TOKEN="your-token" MCP_TRANSPORT=http docker-compose up -d
 
 # Server available at http://localhost:8000/mcp/
 ```
+
+### systemd (Linux host)
+
+To run the HTTP MCP server as a persistent Linux service with `systemctl`, see [`deploy/systemd/`](deploy/systemd/).
+
+```bash
+# After install + setup, install the unit and start:
+sudo cp deploy/systemd/vast-admin-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now vast-admin-mcp
+```
+
+Full steps (user account, auth token, HTTPS, troubleshooting): [systemd Deployment Guide](deploy/systemd/README.md).
 
 ### Kubernetes / OpenShift Deployment
 

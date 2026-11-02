@@ -1,0 +1,30 @@
+[Unit]
+Description=VAST Admin MCP Server (HTTP)
+Documentation=https://github.com/vast-data/vast-admin-mcp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change User/Group to match the account that owns ~/.vast-admin-mcp
+User=vastmcp
+Group=vastmcp
+WorkingDirectory=/var/lib/vast-admin-mcp
+
+# Optional: VAST_ADMIN_MCP_AUTH_TOKEN=vamt_...
+EnvironmentFile=-/etc/vast-admin-mcp/environment
+
+# Adjust ExecStart to the output of: which vast-admin-mcp
+# Add --read-write only when create/update tools are required
+# For HTTPS, add --ssl-cert and --ssl-key
+ExecStart=/var/lib/vast-admin-mcp/.local/bin/vast-admin-mcp mcp --transport http --host 0.0.0.0 --port 8000
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

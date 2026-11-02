@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-11-02
+
+### Fixed
+
+- **View Performance Metrics** -- `list_performance_vast` for views now uses the same `ViewMetrics,*__time_avg` (bandwidth/IOPS) and latency `__avg` series as VMS Views Bandwidth / Views IOPS / Views latency monitors, instead of `__rate`. Bandwidth values labeled `MB/Sec` are treated as bytes/s (no erroneous MiB rescale). Per-column NaN handling prevents unrelated empty metrics (e.g. Kafka) from wiping valid results.
+
 ## [0.2.6] - 2026-10-07
 
 ### Changed
