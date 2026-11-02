@@ -11,6 +11,7 @@ import time
 import fnmatch
 import itertools
 import re
+import warnings
 
 from .config import (
     load_config, REST_PAGE_SIZE, PERFORMANCE_AGGREGATION_FUNCTION, TEMPLATE_MODIFICATIONS_FILE, get_default_template_path,
@@ -482,8 +483,28 @@ def _filter_metrics_for_object_type(prop_list: List[str], object_name: str) -> L
     object_name_lower = object_name.lower()
     
     if object_name_lower == 'view':
-        # Filter for view-specific metrics (only rate metrics, exclude certain patterns)
-        filtered = [key for key in prop_list if '__rate' in key]
+        # Align with VMS predefined monitors:
+        # - Views Bandwidth / Views IOPS: ViewMetrics,*__time_avg (bw / iops only)
+        # - Views latency: ViewMetrics,*latency*__avg
+        # Do not use __rate — those series diverge badly from VMS max/avg.
+        filtered = []
+        for key in prop_list:
+            if not key.startswith('ViewMetrics,'):
+                continue
+            if key.endswith('__time_avg'):
+                if 'latency' in key:
+                    # Prefer __avg for latency (matches "Views latency" monitor)
+                    continue
+                # Only bandwidth / IOPS time averages (exclude qos_*_time etc.)
+                if 'bw' not in key and 'iops' not in key:
+                    continue
+                filtered.append(key)
+            elif (
+                'latency' in key
+                and key.endswith('__avg')
+                and not key.endswith('__time_avg')
+            ):
+                filtered.append(key)
         for pattern in EXCLUDED_VIEW_METRIC_PATTERNS:
             filtered = [key for key in filtered if pattern not in key]
         return filtered
@@ -526,12 +547,24 @@ def _normalize_metric_display(display_name: str, units: str, metric_name: str) -
         Tuple of (normalized_display_name, normalized_units)
     """
     # Normalize display name
-    if display_name == "ViewMetrics,read_latency__rate":
+    if display_name in (
+        "ViewMetrics,read_latency__rate",
+        "ViewMetrics,read_latency__avg",
+        "ViewMetrics,read_latency__time_avg",
+    ):
         display_name = "Read Latency"
-    if display_name == "ViewMetrics,write_latency__rate":
+    if display_name in (
+        "ViewMetrics,write_latency__rate",
+        "ViewMetrics,write_latency__avg",
+        "ViewMetrics,write_latency__time_avg",
+    ):
         display_name = "Write Latency"
+    if display_name.lower().startswith('average '):
+        display_name = display_name[8:]
     display_name = display_name.replace(' (Rate)', '')
     display_name = display_name.replace(' (Sum)', '')
+    display_name = display_name.replace(' (Avg)', '')
+    display_name = display_name.replace(' (Time Avg)', '')
     if display_name.upper().endswith('IOPS'):
         display_name = display_name.rsplit(" ", 1)[0]
     if display_name.upper().endswith('BANDWIDTH'):
@@ -540,6 +573,9 @@ def _normalize_metric_display(display_name: str, units: str, metric_name: str) -
         display_name = display_name.rsplit(" ", 1)[0]
     if display_name.upper().endswith('LATENCY'):
         display_name = display_name.rsplit(" ", 1)[0]
+    # Catalog sometimes uses "READ IOPS" — normalize so Read BW/IOPS/latency merge
+    if display_name.upper() in ('READ', 'WRITE'):
+        display_name = display_name.title()
     
     # Normalize units
     if not units:
@@ -550,8 +586,12 @@ def _normalize_metric_display(display_name: str, units: str, metric_name: str) -
         else:
             units = 'bw'
     elif 'MB/Sec' in units:
+        # ViewMetrics *__time_avg bandwidth is labeled MB/Sec but values are bytes/s
+        # (same series as VMS Views Bandwidth). Keep as bw without MB→bytes conversion.
         units = 'bw'
     elif units == 'ms':
+        # Catalog says ms, but ViewMetrics latency __avg values are microseconds
+        # (same as proto latency). Format path divides by 1000 for display.
         units = 'latency'
     elif units == 'IOPS':
         units = 'iops'
@@ -605,27 +645,35 @@ def _process_performance_data(
         
         data_points_np = data_points_np[:, 2:]  # Exclude timestamp and object_id columns
         data_points_np = data_points_np.astype(np.float64)
-        data_points_np = data_points_np[~np.isnan(data_points_np).any(axis=1)]  # Remove NaN rows
-        
-        # Check if array is empty after removing NaN rows
+
+        # Per-column NaN handling: unrelated metrics (e.g. Kafka) being all-NaN
+        # must not wipe valid bandwidth/IOPS/latency rows.
         if data_points_np.size == 0 or len(data_points_np) == 0:
-            logging.warning(f"No valid data points found for {object_name} instance: {instance_name} (ID: {object_id}) after filtering NaN values")
+            logging.warning(f"No data points found for {object_name} instance: {instance_name} (ID: {object_id})")
             continue
-        
-        summarized_metrics_percentile = np.percentile(data_points_np, 95, axis=0)
-        summarized_metrics_avg = np.mean(data_points_np, axis=0)
-        summarized_metrics_max = np.max(data_points_np, axis=0)
+
+        with np.errstate(all='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            summarized_metrics_percentile = np.nanpercentile(data_points_np, 95, axis=0)
+            summarized_metrics_avg = np.nanmean(data_points_np, axis=0)
+            summarized_metrics_max = np.nanmax(data_points_np, axis=0)
         
         # Map metrics to values
         for i, metric_name in enumerate(prop_list_response[2:]):
+            if np.isnan(summarized_metrics_avg[i]) and np.isnan(summarized_metrics_max[i]):
+                continue
+
             metric_info = metrics_map.get(object_name.lower(), {}).get(metric_name, {})
             display_name = metric_info.get('title', '')
             units = metric_info.get('units', '')
+            original_units = units
             
             display_name, units = _normalize_metric_display(display_name, units, metric_name)
             
-            # Convert MB/s to bytes/s for bandwidth if needed
-            if units == 'bw' and not metric_info.get('units'):
+            # Convert MB/s to bytes/s only when catalog has no units (legacy/empty).
+            # ViewMetrics *__time_avg is labeled MB/Sec but already returns bytes/s —
+            # do not rescale those (matches VMS Views Bandwidth).
+            if units == 'bw' and not original_units:
                 summarized_metrics_avg[i] *= 1024 * 1024
                 summarized_metrics_percentile[i] *= 1024 * 1024
                 summarized_metrics_max[i] *= 1024 * 1024
@@ -638,9 +686,9 @@ def _process_performance_data(
             if units not in performance_table[instance_name][display_name]:
                 performance_table[instance_name][display_name][units] = {}
             
-            performance_table[instance_name][display_name][units]['Average'] = summarized_metrics_avg[i]
-            performance_table[instance_name][display_name][units]['95th Percentile'] = summarized_metrics_percentile[i]
-            performance_table[instance_name][display_name][units]['Max'] = summarized_metrics_max[i]
+            performance_table[instance_name][display_name][units]['Average'] = float(summarized_metrics_avg[i])
+            performance_table[instance_name][display_name][units]['95th Percentile'] = float(summarized_metrics_percentile[i])
+            performance_table[instance_name][display_name][units]['Max'] = float(summarized_metrics_max[i])
     
     return performance_table
 
@@ -684,6 +732,7 @@ def _format_performance_table(
                     if units == 'iops':
                         row[col_name] = int(stat_value)
                     elif units == 'latency':
+                        # Microseconds (proto + ViewMetrics latency __avg)
                         row[col_name] = f"{stat_value/1000:.2f} ms"
                     else:  # bytes/s
                         row[col_name] = pretty_size(stat_value) + '/s'

@@ -82,8 +82,10 @@ GRANULARITY_THRESHOLD_SECONDS = 14400  # 4 hours - threshold for minutes granula
 GRANULARITY_THRESHOLD_HOURS = 172800  # 2 days - threshold for hours granularity
 GRANULARITY_THRESHOLD_DAYS = 864000  # 10 days - threshold for days granularity
 
-# Excluded metric patterns for view performance
-EXCLUDED_VIEW_METRIC_PATTERNS = ['squares', 's3', 'rpc', 'time']
+# Excluded metric patterns for view performance (applied after selecting
+# ViewMetrics __time_avg / latency __avg). Do not exclude "time" — we need __time_avg
+# to match VMS Views Bandwidth / Views IOPS monitors.
+EXCLUDED_VIEW_METRIC_PATTERNS = ['squares', 's3', 'rpc']
 
 # Dataflow (iodata) defaults
 DATAFLOW_DEFAULT_RESULTS_NUM = 10
