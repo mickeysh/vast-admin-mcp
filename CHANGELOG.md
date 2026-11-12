@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **`env:` Password References** -- `retrieve_password_secure` no longer raises `UnboundLocalError: cannot access local variable 'os'` for `env:<VAR>` cluster passwords. Function-local `import os` statements in the keyring branch made `os` local to the whole function, so the earlier `env:` branch failed. Every tool call against a cluster configured with an `env:` reference failed with "Failed to retrieve password for cluster ...".
+- **`performance-graph` Argument Errors** -- Missing `--monitor-name` / `--cluster` / `--object-name` now print the intended error instead of `UnboundLocalError` on `sys` (same local-import shadowing).
+- Removed the remaining redundant function-local re-imports of module-level names (`json` in `start_mcp`, `output_results` in `handle_performance_graph_command`) and added `tests/test_local_import_shadowing.py`, which fails if a function uses a module-level name before re-importing it locally.
+
 ## [0.2.7] - 2026-11-02
 
 ### Fixed
